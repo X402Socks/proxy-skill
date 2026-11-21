@@ -5,7 +5,7 @@ Secrets never leave this process:
   key   -> ~/.x402socks/key   (0600, never printed)
   token -> ~/.x402socks/token (0600, never printed)
 
-Requires: python3 -m pip install --user "eth-account>=0.11"
+Requires: python3 -m pip install "eth-account>=0.11" (in a local venv).
 """
 import argparse, base64, json, os, secrets, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -15,6 +15,7 @@ WEB = "https://x402socks.com"
 PAY = "https://payments.x402socks.com"
 API = "https://api.x402socks.com"
 USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+RPC = os.environ.get("X402SOCKS_RPC", "https://mainnet.base.org")
 HOME = Path(os.environ.get("X402SOCKS_HOME", Path.home() / ".x402socks"))
 KEY, TOKEN, META, RECEIPTS = HOME / "key", HOME / "token", HOME / "token.json", HOME / "receipts"
 
@@ -82,6 +83,26 @@ def cmd_wallet(args):
         secret_write(KEY, acct.key.hex())
         print(acct.address)
         print(f"key: {KEY} (0600). Back it up offline; it is the only copy.", file=sys.stderr)
+    elif args.action == "import":
+        # Never regex the first 0x…64 in a wallet note: a transaction hash has
+        # the same shape. Require the "Private Key:" label and cross-check the
+        # declared address when the note contains one.
+        import re
+        note = Path(args.file).read_text()
+        m = re.search(r"(?im)^\s*(?:private key|private_key|key)\s*:\s*(0x[0-9a-fA-F]{64})\b", note)
+        if not m:
+            die("no labelled 'Private Key: 0x…' line found in the file")
+        key = m.group(1).strip()
+        addr = Account.from_key(key).address
+        declared = re.search(r"(?im)^\s*address\s*:\s*(0x[0-9a-fA-F]{40})\b", note)
+        if declared and declared.group(1).lower() != addr.lower():
+            die("declared Address: does not match the private key; refusing to import")
+        if KEY.exists() and not args.force:
+            die(f"{KEY} already exists; refusing to overwrite (use --force deliberately)")
+        secret_write(KEY, key)
+        print(addr)
+        print(f"key imported from {args.file} -> {KEY} (0600); key not printed",
+              file=sys.stderr)
     else:
         print(Account.from_key(read_key()).address)
 
@@ -93,12 +114,13 @@ def cmd_fund(args):
     payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_call",
                "params": [{"to": USDC_BASE, "data": data}, "latest"]}
     try:
-        _, _, text = http("https://mainnet.base.org", "POST", payload)
+        _, _, text = http(RPC, "POST", payload)
         bal = int(json.loads(text)["result"], 16) / 1e6
     except Exception as e:  # noqa: BLE001
         bal, note = None, f"(balance check unavailable: {e})"
     print(f"address: {addr}")
     print(f"network: Base (eip155:8453), native USDC {USDC_BASE}")
+    print(f"rpc: {RPC}")
     if bal is None:
         print(note)
     else:
@@ -205,9 +227,16 @@ def cmd_buy(args):
     key = read_key()
     address = Account.from_key(key).address
     pkgs = {p["id"]: p for p in catalog()}
-    if args.package not in pkgs:
-        die(f"unknown package {args.package}; see: {sys.argv[0]} quote")
-    price = float(pkgs[args.package]["price_usd"])
+    pkg = pkgs.get(args.package)
+    if pkg is None:
+        if not args.allow_unknown:
+            die(f"unknown package {args.package}; see: {sys.argv[0]} quote "
+                "(test-only rails need --allow-unknown --max-usd)")
+        if args.max_usd is None:
+            die("--allow-unknown requires --max-usd as an absolute spend ceiling")
+        price = None
+    else:
+        price = float(pkg["price_usd"])
 
     code, hdrs, text = http(f"{PAY}/v1/access/{args.package}", "POST", {})
     if code == 200:
@@ -221,13 +250,19 @@ def cmd_buy(args):
     if not req:
         die("challenge has no exact/eip155:8453 requirement")
     amount = int(req["amount"])
-    expected = round(price * 1_000_000)
     if req["asset"].lower() != USDC_BASE.lower():
         die(f"unexpected asset {req['asset']}")
-    if amount != expected and not args.force:
-        die(f"amount {amount} != catalog price {expected} atomic; refusing (use --force to override)")
+    if price is None:
+        cap = round(args.max_usd * 1_000_000)
+        if amount > cap:
+            die(f"amount {amount} atomic exceeds --max-usd ceiling {cap} atomic")
+    else:
+        expected = round(price * 1_000_000)
+        if amount != expected and not args.force:
+            die(f"amount {amount} != catalog price {expected} atomic; refusing (use --force to override)")
     if not args.yes:
-        die(f"would pay {amount / 1e6:.2f} USDC for {args.package} to {req['payTo']}; re-run with --yes")
+        die(f"would pay {amount} atomic ({amount / 1e6:.6f} USDC) for {args.package} "
+            f"to {req['payTo']}; re-run with --yes")
 
     payload = {
         "x402Version": 2,
@@ -259,7 +294,10 @@ def cmd_buy(args):
     secret_write(META, json.dumps({"package": args.package, "amount_atomic": amount,
                                    "bought_at": int(time.time())}, indent=2))
     receipt = save_receipt(args.package, amount, pr)
-    print(f"bought {args.package} for {amount / 1e6:.2f} USDC")
+    # Test rails can cost a single atomic unit; two decimals would print 0.00.
+    paid = (f"{amount} atomic ({amount / 1e6:.6f} USDC)" if amount < 10_000
+            else f"{amount / 1e6:.2f} USDC")
+    print(f"bought {args.package} for {paid}")
     print(f"token saved to {TOKEN} (0600, {len(token)} chars) — value not printed")
     print(f"receipt: {receipt}")
     print("verify now:  " + sys.argv[0] + " status && " + sys.argv[0] + " check")
@@ -371,8 +409,10 @@ def main():
     ap = argparse.ArgumentParser(prog="x402socks", description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    w = sub.add_parser("wallet", help="create or show the hot wallet")
-    w.add_argument("action", choices=["create", "address"], nargs="?", default="address")
+    w = sub.add_parser("wallet", help="create, import, or show the hot wallet")
+    w.add_argument("action", choices=["create", "import", "address"], nargs="?", default="address")
+    w.add_argument("file", nargs="?", help="file with a 'Private Key: 0x…' line (import only)")
+    w.add_argument("--force", action="store_true", help="allow overwriting an existing key")
     w.set_defaults(fn=cmd_wallet)
 
     sub.add_parser("fund", help="show address and USDC balance on Base").set_defaults(fn=cmd_fund)
@@ -382,6 +422,10 @@ def main():
     b.add_argument("--package", required=True)
     b.add_argument("--yes", action="store_true", help="confirm the spend")
     b.add_argument("--force", action="store_true", help="ignore catalog price mismatch")
+    b.add_argument("--allow-unknown", action="store_true",
+                   help="test-only: allow a package id that is absent from the public catalog")
+    b.add_argument("--max-usd", type=float,
+                   help="absolute spend ceiling for --allow-unknown")
     b.set_defaults(fn=cmd_buy)
 
     sub.add_parser("status", help="token status").set_defaults(fn=cmd_status)

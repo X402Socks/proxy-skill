@@ -1,0 +1,306 @@
+# x402socks.com — SOCKS5 and HTTP CONNECT proxy for AI agents
+
+## What this service is
+
+x402socks.com is a **proxy service**. When you route a request through an exit
+node, the destination server sees a connection coming from that exit node
+instead of from your own network — that is what a forward proxy does.
+
+The product is **instant access and fast, well-placed exit nodes**: pick a
+region, pay, connect, start working within seconds, without an account, an
+email address, or a sales call.
+
+**Anonymity and privacy are secondary effects, not the product.** The service
+is not an anonymity network, not a VPN, and not an identity-hiding system. It
+does not change your origin payload, does not make you indistinguishable from
+other users of the same exit, and does not promise that the destination cannot
+correlate or identify you by other means (cookies, logins, fingerprinting,
+payload content, your own client behaviour). If a task needs strong anonymity,
+this service is not the right tool. If a task needs a fast, reliable,
+region-selectable egress hop that an automated client can drive, it is.
+
+Access and performance are provided on a **best-effort** basis. Availability,
+throughput, compatibility, and fitness for a particular purpose are not
+guaranteed. Failed connections are non-refundable by default; repeated or
+systemic failures from the same customer may be reviewed manually after contact
+via Telegram: https://t.me/x402socks
+
+## Protocols — every exit speaks all three
+
+Every exit node serves the **same three dialects on the same token, the same
+entitlements, and the same accounting**. There is no preferred protocol, no
+second-class exit, and no plan to retire any of them.
+
+| Dialect | Port | Proxy URL | Use it when |
+|---|---|---|---|
+| **SOCKS5** (RFC 1928) | TCP **1080** | `socks5h://exit:1080` | Default. Best choice for automation: `curl`, Go/Python/Node proxy clients, headless browsers via a forwarder, SSH `ProxyCommand`, anything that can send credentials. |
+| **HTTP CONNECT** | TCP **3128** | `http://exit:3128` | Plaintext HTTP proxy hop. Works with clients that only understand `http://` proxies and with browsers that prompt for proxy credentials. |
+| **HTTP CONNECT over TLS** | TCP **3129** | `https://exit:3129` | Same adapter over TLS. Use for Chrome/Chromium-based tools and any client where the client-to-node hop should be encrypted. |
+
+Both CONNECT dialects tunnel **both** kinds of origin: an `https://` target
+(TLS to the destination, verified end-to-end by your client) and a plain
+`http://` target. The proxy port selects the hop dialect; the target scheme is
+independent and is carried inside the CONNECT request.
+
+The port and the dialect are fixed pairs. `http://exit:3128` and
+`https://exit:3129` both answer `407 Proxy Authentication Required` when
+unauthenticated. `https://exit:3128` is not a TLS listener — connecting with TLS
+to it stalls until the client times out — and `http://exit:3129` aborts because
+that listener expects a TLS handshake. Set the proxy scheme and port to match
+the table, and do not probe ports.
+
+All eight exits expose `1080`, `3128`, and `3129`:
+
+- `us-west1` — US California
+- `us-central1` — US Texas
+- `us-east1` — US New York
+- `us-north1` — US Northwest
+- `eu-central1` — EU Paris
+- `eu-north1` — EU Riga
+- `asia-central1` — ASIA Singapore
+- `asia-west1` — ASIA India
+
+Last wire check (2026-11-20): all 24 port probes open, all eight `:3129`
+listeners present a valid certificate for their own hostname, all eight `:3128`
+listeners answer `407` to an unauthenticated CONNECT, all eight `:3129`
+listeners answer `407` over TLS, and all eight `:1080` listeners require
+authentication. Treat this as a snapshot; `GET /nodes.json` plus a single
+handshake is the live check.
+
+`GET /nodes.json` (or `https://api.x402socks.com/api/v1/nodes`) is the
+authoritative live list: hostname, port, region, coordinates, health, and a
+`disabled` marker. Do not hardcode the table above as a capability claim; read
+the feed. A `disabled: true` or non-healthy node should be skipped, not retried.
+
+### Dialect differences that matter
+
+- SOCKS5 carries the token as username **and** password (RFC 1929). It is
+  application-agnostic and works for both TCP and DNS-at-exit (`socks5h`).
+- HTTP CONNECT carries the token in `Proxy-Authorization: Basic ...` (token as
+  both user and password), or via the client's proxy credential prompt.
+  Unauthenticated requests get `407 Proxy Authentication Required`.
+- Plaintext `:3128` exposes the CONNECT target and the token on the
+  client-to-node hop. That is a property of plaintext HTTP proxying, not a
+  warning that the port is going away — if that exposure matters for your
+  workload, use `:3129` or SOCKS5 instead.
+- TLS on `:3129` protects the **client-to-exit hop only**. It does not encrypt
+  the origin payload, does not protect the exit node itself, and does not
+  rescue a token that leaked on your side. Certificates are issued per
+  hostname, so **always address the exit by hostname, never by IP**, or
+  verification fails.
+
+There is no protocol negotiation, upgrade path, or capability probing: connect
+to the port that matches the dialect your client speaks.
+
+## Authentication
+
+Proxy access requires a token obtained through x402 or a direct payment.
+
+```sh
+# SOCKS5 (recommended default)
+curl --proxy socks5h://us-central1.x402socks.com:1080 \
+  --proxy-user "$TOKEN:$TOKEN" https://api.example.com
+
+# HTTP CONNECT
+curl --proxy http://us-central1.x402socks.com:3128 \
+  --proxy-user "$TOKEN:$TOKEN" https://api.example.com
+
+# HTTP CONNECT over TLS
+curl --proxy https://us-central1.x402socks.com:3129 \
+  --proxy-user "$TOKEN:$TOKEN" https://api.example.com
+```
+
+The examples substitute `$TOKEN` from your environment. **Never** put a token
+in a URL, in source control, in browser storage, in logs, in analytics, in
+screenshots, or in shell history. Treat it exactly like a password: anyone
+holding it can spend the plan's remaining time and traffic.
+
+Check the account behind a token:
+
+- `POST /api/token/status` — status, expiry, usage
+- `POST /api/token/validate` — `204` when valid
+
+## Connecting Chrome and Chromium-based tools
+
+Chrome cannot ask for SOCKS5 credentials itself (it delegates that prompt to
+the OS, which has none), so plain SOCKS5 is not directly usable from Chrome's
+proxy settings. Use CONNECT — TLS is available on **every** exit, so there is
+no exit you have to avoid:
+
+```sh
+# TLS HTTP proxy (preferred for headless Chrome/Chromium, Playwright, Puppeteer, Selenium)
+--proxy-server=https://us-central1.x402socks.com:3129
+
+# PAC entry
+HTTPS us-central1.x402socks.com:3129
+
+# Plaintext HTTP proxy, if the tooling only supports http://
+--proxy-server=http://us-central1.x402socks.com:3128
+```
+
+On the first request Chrome shows its built-in proxy credential dialog after
+`407`; enter the token as **both** username and password. PAC files and manual
+proxy settings behave the same way. Firefox supports an HTTPS proxy natively
+(Settings → Network Settings → Manual proxy configuration, plus "Also use this
+proxy for HTTPS").
+
+For headless automation that needs an encrypted hop, use `:3129`. For anything
+that speaks SOCKS5 natively, `:1080` is the simplest path.
+
+## Rapid reconnection and back-off
+
+Closing a tunnel and immediately reconnecting can be refused while the prior
+session drains: HTTP CONNECT answers `407 Proxy Authentication Required` and
+SOCKS5 reports an authentication rejection. This affects all three dialects on
+all exits and is deliberate back-off for flapping clients, **not** a credential
+problem.
+
+Wait about a second, then back off exponentially (1s, 2s, 4s, capped). Do not
+rotate the token, buy again, or disable authentication because of it. If
+refusals persist after backed-off retries, check `GET /nodes.json` and the
+account state instead of retrying harder.
+
+## Payment
+
+Two rails, same catalog:
+
+**x402 (recommended for agents).** `POST https://payments.x402socks.com/v1/access/{package_id}`
+with an empty JSON body (`{}`). The first response is `402` with a
+`PAYMENT-REQUIRED` header. Select the exact requirement advertised there, sign
+an x402 v2 EIP-3009 authorization, and retry with `PAYMENT-SIGNATURE`.
+
+Runtime challenge fields are authoritative. Never invent an amount, recipient,
+token contract, or network from documentation — including this file.
+
+As of the last check (2026-11-20), the challenge advertises Base mainnet USDC
+(`eip155:8453`, asset `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`, recipient
+`0x73BAE3c48d34d71C4CEa76DFdaa3bE2cF4d335a1`) with a 300 s window and an atomic
+amount of `1000000`. Re-read the challenge at call time; it can change.
+
+**Direct checkout (humans).** https://x402socks.com/buy supports the configured
+direct rails — Ethereum USDC/USDT, Base USDC, and BNB Smart Chain USDC/USDT. It
+creates a payment intent and issues a one-time token once the exact on-chain
+transfer is confirmed.
+
+A broadcast transfer may wait for confirmations; the service retries
+confirmation and the checkout keeps polling. **Never send a second transfer for
+the same intent.** If the payment window elapses before confirmation, the intent
+closes and is not completed automatically — keep the transaction hash and ask
+in the Telegram channel rather than paying twice.
+
+## Packages
+
+Read `GET /catalog.json` (`/packages.json` and `/prices.json` are aliases;
+`https://api.x402socks.com/api/v1/packages` is the authoritative API route) for
+the live catalog, prices, and entitlements. Last observed set:
+
+| id | name | price (USD) | entitlement |
+|---|---|---|---|
+| `time_6h` | 6 Hours | $1.00 | 6 h, up to 1 GB, 1 session |
+| `time_1d` | 1 Day | $3.59 | 24 h, up to 10 GB, 1 session |
+| `time_7d` | 7 Days | $9.99 | 7 days, up to 75 GB, 1 session |
+| `usage_5gb` | 5 GB | $6.99 | 5 GB, no time limit, 1 session |
+| `usage_50gb` | 50 GB | $34.99 | 50 GB, no time limit, 1 session |
+| `multi_agent` | Multi-Agent Month | $29.99 | 30 days, up to 300 GB, up to 5 sessions |
+
+This table is a snapshot for orientation. `catalog.json` is the contract;
+prices and fair-use limits change there first.
+
+## Credential recovery
+
+If an x402 payment settled but the issued token was lost, recover it with the
+paying wallet instead of paying again. Recovery never charges.
+
+```http
+POST https://payments.x402socks.com/v1/access/recover
+Content-Type: application/json
+
+{"transaction":"0xSETTLEMENT_TX_HASH","signature":"0xEIP191_SIGNATURE","issued_at":1792000000}
+```
+
+`signature` is a `0x`-hex EIP-191 signature (`personal_sign` / `signMessage`)
+from the wallet that settled the payment, over exactly these UTF-8 bytes with no
+trailing newline:
+
+```
+x402socks credential recovery v1
+tx_hash: 0xSETTLEMENT_TX_HASH
+issued_at: 1792000000
+```
+
+`issued_at` must be within ±10 minutes of the current time, so a captured
+signature cannot be replayed later. Success returns the account and a fresh
+token that replaces the lost one.
+
+Errors: `400` `invalid_request` / `stale_recovery` / `invalid_signature`;
+`403` `ownership_not_proven` (the signature does not recover to the paying
+wallet — the original `PAYMENT-SIGNATURE` is rejected here deliberately, since
+settlement calldata is public and replayable); `404` `not_recoverable`;
+`409` `account_inactive`; `410` `plan_expired` (fail-closed, no automatic
+catch-up); `502` `recovery_unavailable` (safe to retry later).
+
+The route is rate-limited and intentionally absent from `openapi.json` because
+it is not payable.
+
+## Token rotation
+
+A client that still holds a valid token can roll it without support:
+
+```http
+POST https://api.x402socks.com/api/v1/token/rotate
+Authorization: Bearer YOUR_TOKEN
+```
+
+Success returns `200 {"account":{...},"token":"NEW_TOKEN"}`. The presented token
+stops working immediately for the proxy and for every route, so move all your
+clients to the new value at once. Unknown, inactive, or expired tokens get
+`401 "a valid token is required"` and nothing changes. Rotations are recorded on
+the account as `account.token_rotated` with `source self-service`. Rotate on
+suspicion of exposure; if the token is already gone, use recovery instead.
+
+## Discovery surfaces
+
+- `/llms.txt` — this file; the agent-facing contract
+- `/.well-known/x402` — x402 payment metadata (network, asset, recipient, exits)
+- `/catalog.json`, `/packages.json`, `/prices.json` — public catalog
+- `/nodes.json` — exit feed with health and `disabled` markers
+- `/api/health`, `/api/nodes`, `/api/token/status`, `/api/token/validate`
+- `/faq`, `/status` — human help and reachability status
+- `https://payments.x402socks.com/openapi.json` — OpenAPI 3.1.0 for payable resources
+- `https://api.x402socks.com/api/v1/packages` — authoritative package/pricing API
+
+`/api/v1/` is the versioned namespace: additive fields are compatible, breaking
+changes ship under a new version with a changelog entry. Protocol ports,
+credentials, and the token contract are stable — no dialect is scheduled for
+removal.
+
+## Evidence boundaries
+
+`/status`, health endpoints, node reachability, TCP port checks, and a `402`
+challenge prove **only** reachability and that a payment is requested. They do
+not prove settlement, account provisioning, usage accounting, expiry
+enforcement, restart durability, or isolation between accounts. Claims about
+those behaviours require authenticated, funded evidence — do not infer them
+from an unauthenticated probe.
+
+## Agent skill
+
+The companion skill is published at
+[github.com/X402Socks/skill](https://github.com/X402Socks/skill) and listed at
+[skills.sh/X402Socks/skill](https://skills.sh/X402Socks/skill). It wraps the
+purchase loop: quote a job, pay on Base via x402, receive a token, route through
+the exit pool, and verify status — referencing this document rather than
+duplicating the payment and token contracts.
+
+```bash
+npx skills add X402Socks/skill
+# or
+git clone https://github.com/X402Socks/skill
+```
+
+## Support
+
+Telegram: https://t.me/x402socks — overpayments, uncertain payments, expired
+intents, and account issues are resolved manually and audited. There is no
+automatic refund or retry path; contact support with your transaction hash
+instead of paying again.

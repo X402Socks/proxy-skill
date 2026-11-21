@@ -35,10 +35,14 @@ wallet  ->  fund USDC (Base)  ->  quote  ->  buy  ->  verify  ->  use
 ### 0. Install the helper once
 
 ```sh
-python3 -m pip install --user "eth-account>=0.11"
+python3 -m venv .venv                    # inside your working directory
+PIP_NO_CACHE_DIR=1 .venv/bin/pip -q install "eth-account>=0.11"
 cd <skill-dir>            # the folder containing this SKILL.md
-S=scripts/x402socks.py
+S=$PWD/scripts/x402socks.py
+PY=$OLDPWD/.venv/bin/python              # absolute paths survive cd
 ```
+
+Do not use `pip install --user`: it writes outside the working directory.
 
 Everything below uses `$S`, relative to the skill directory — resolve it to an
 absolute path if your runtime changes the working directory. All state lives in
@@ -47,11 +51,20 @@ absolute path if your runtime changes the working directory. All state lives in
 ### 1. Get an EVM address
 
 ```sh
-python3 $S wallet create     # prints the public 0x address, writes the key 0600
-python3 $S wallet address    # print the address again (safe)
+$PY $S wallet create          # prints the public 0x address, writes the key 0600
+$PY $S wallet address         # print the address again (safe)
 ```
 
-Details, alternatives (`cast wallet new`), and imports: `references/wallet.md`.
+If the operator supplies a wallet note instead:
+
+```sh
+$PY $S wallet import ./WALLET.md    # reads the labelled 'Private Key:' line
+```
+
+The importer requires the `Private Key:` label (a tx hash in the same note has
+the same 0x+64-hex shape) and cross-checks the declared `Address:` line. It
+never prints the key. Keep the note out of Git (`WALLET.md` in `.gitignore`).
+Details and alternatives (`cast wallet new`): `references/wallet.md`.
 
 ### 2. Fund it with USDC on Base
 
@@ -153,6 +166,8 @@ Selection, back-off, Selenium/Playwright, and scraping patterns:
 | `502` from `/v1/access` | settled but provisioning failed | keep tx hash, retry later or `recover` |
 | tunnel opens, wrong IP | exit healthy but not the one you meant | `curl https://x402socks.com/nodes.json` |
 | `curl` hangs on `https://exit:3128` | `:3128` is plaintext-only | use `http://:3128` or `https://:3129` |
+| large download cut after ~30–60 s, `curl: (18)` | exit closes long streams | record partial bytes; use HTTP Range chunks |
+| `status` becomes 401 after a few MB | service deactivated the account | **stop**; do not keep buying; record the tx hash and report |
 
 ## Don't
 
@@ -161,3 +176,12 @@ Selection, back-off, Selenium/Playwright, and scraping patterns:
 - Don't hardcode prices, recipients, or amounts — read the runtime `402`
   challenge; it is authoritative.
 - Don't claim the proxy proves anonymity or untraceability to the user.
+
+## Acceptance test
+
+`FIRE_DRILL.md` in the repository root is a cold-start drill: create a wallet,
+fund it, read the live instructions, buy the test rail `internal_fire_drill`,
+verify the token, measure five exits and three 100 MB transfers, run to the
+1 GB cap, and write a report. Use it to prove the skill works for an agent with
+no prior context; it spends real (test-priced) USDC and needs an operator-funded
+address.

@@ -20,9 +20,17 @@ cast wallet new            # prints Address + Private key; store the key yoursel
 cast wallet new --json     # machine-readable
 ```
 
-If the key already exists elsewhere, import it by writing the hex to
-`~/.x402socks/key` with `chmod 600` — or keep using your own signer and pass the
-key path via `--key` where the helper allows it.
+If the key already exists elsewhere, import it with the helper:
+
+```sh
+python3 skills/x402socks/scripts/x402socks.py wallet import ./WALLET.md
+```
+
+The note must contain a labelled `Private Key: 0x…` line. **Never grab the first
+`0x` + 64 hex token in a wallet note**: a Base transaction hash has exactly the
+same shape and would be imported as an unusable "key". The importer also checks
+the `Address:` line against the derived address and writes the key `0600`
+without printing it. Add the note itself to `.gitignore`.
 
 Verify what you have:
 

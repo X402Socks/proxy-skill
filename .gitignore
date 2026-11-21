@@ -1,0 +1,7 @@
+# drill/runtime state — never commit
+.x402socks/
+artifacts/
+.venv/
+__pycache__/
+*.pyc
+WALLET.md
